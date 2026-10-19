@@ -121,6 +121,30 @@ input 子系统的集成是否正确。
 累加器: 累加的四分之一拍达到 `steps_per_detent` 时上报一次；反向转动会抵消未满一格的移动。
 
 
+## 与上游驱动的差异
+
+本项目的功能定位是内核上游 `drivers/input/misc/rotary_encoder.c` 的一个
+最小子集。对照 Linux 6.8 的上游实现，主要差异如下：
+
+| 维度 | 本项目 | 上游 v6.8 |
+|------|--------|-----------|
+| 设备来源 | 模块 init 中手动注册 platform_device，并硬编码 gpiod_lookup_table | 设备树 `compatible = "rotary-encoder"`，通过 device_property API 读取配置 |
+| 配置方式 | 模块参数 `steps_per_detent`、`invert` | DT 属性 `steps-per-period`、`steps`、`linux,axis`、`relative-axis`、`rollover`、`encoding`、`wakeup-source` |
+| 解码方式 | `(A << 1) \| B` 加 4x4 转移表，按四分之一拍累加 | 根据 `steps-per-period` 选择 full / half / quarter 三个中断处理函数，用 `armed`、`last_stable` 状态机判断方向和上报时机 |
+| 上报事件 | 固定 `EV_REL` / `REL_X`，每个档位 ±1 | 默认 `EV_ABS` 绝对位置；设置 `rotary-encoder,relative-axis` 后改为 `EV_REL`，并支持 `rollover` 回绕 |
+| 编码类型 | 只支持正交（gray）序列 | 支持 gray（默认）和 binary |
+| 上报时机 | 累加满 `steps_per_detent` 时上报，档位边界由参数决定 | full-period 模式在两线均低（state 0）时上报；quarter 模式每次状态变化都上报 |
+| 电源管理 | 无 | `wakeup-source` + suspend/resume 中调用 `enable_irq_wake()` |
+| 初始状态 | `probe()` 采样 `last_state` | quarter / half 模式在 probe 采样 `last_stable`；full-period 模式用 `armed` 标志，不依赖初始状态 |
+| 中断注册 | 两条线分别调用 `devm_request_threaded_irq()` | 循环遍历 GPIO 数组注册，同样使用线程化中断和 mutex |
+
+共同点：都使用 platform 驱动、双边沿线程化中断、mutex 保护共享状态，
+并通过 input 子系统上报事件。
+
+上游的 `rotary-encoder,steps` 表示绝对轴一圈的总步数，与本项目的
+`steps_per_detent`（一个机械档位包含的四分之一拍数）不是同一个概念。
+
+
 ## 局限性
 
 - GPIO lookup table 和 platform device 都是硬编码的，不支持设备树
